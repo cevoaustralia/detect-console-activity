@@ -1,0 +1,97 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: Deploys a lambda function to log cloudtrail events.
+
+Resources:
+
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: ConsoleActivitiesDashboard
+      DashboardBody: |
+        {
+          "widgets": [
+            {
+              "type": "log",
+              "x": 0,
+              "y": 0,
+              "width": 24,
+              "height": 18,
+              "properties": {
+                "query": "SOURCE '/aws/lambda/ConsoleActivityLog' | fields @timestamp, detail.eventSource, detail.eventName, detail.userIdentity.principalId\n| filter version = 0\n| filter detail.eventName not in [\"StartQuery\"]\n| sort @timestamp desc\n| limit 20",
+                "region": "ap-southeast-2",
+                "title": "Manual Console Activities",
+                "view": "table"
+              }
+            }
+          ]
+        }
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-LambdaRole"
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Path: /
+      Policies:
+        - PolicyName: EventBridgeAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource: "*"
+
+  MutativeActionTriggerRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: "Watch for cloud trail events which are mutative"
+      EventBusName: default
+      EventPattern:
+        detail-type:
+          - "AWS API Call via CloudTrail"
+        detail:
+          sessionCredentialFromConsole:
+            - "true"
+          readOnly:
+            - False
+      State: "ENABLED"
+      Targets:
+        -
+          Arn:
+            Fn::GetAtt:
+              - "LambdaFunction"
+              - "Arn"
+          Id: "TargetFunctionV1"
+
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LambdaFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn:
+        Fn::GetAtt:
+          - "MutativeActionTriggerRule"
+          - "Arn"
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ConsoleActivityLog
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: python3.7
+      Handler: index.lambda_handler
+      Timeout: 60
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              print(event)
